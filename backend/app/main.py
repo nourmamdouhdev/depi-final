@@ -82,4 +82,49 @@ app.add_middleware(
 def health_check():
     return {"status": "healthy"}
 
+@app.get("/api/debug")
+def debug_model():
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    backend_dir = os.path.dirname(app_dir)
+    workspace_dir = os.path.dirname(backend_dir)
+    
+    config_search_paths = [
+        os.path.join(workspace_dir, "config.json"),
+        os.path.join(backend_dir, "models", "config.json"),
+        os.path.join(workspace_dir, "models", "config.json"),
+    ]
+    
+    weights_search_paths = [
+        os.path.join(workspace_dir, "model.weights.h5"),
+        os.path.join(backend_dir, "models", "model.weights.h5"),
+        os.path.join(workspace_dir, "models", "model.weights.h5"),
+    ]
+    
+    paths_status = {}
+    for p in config_search_paths + weights_search_paths:
+        paths_status[p] = os.path.exists(p)
+        
+    try:
+        models_files = os.listdir(os.path.join(backend_dir, "models"))
+    except Exception as e:
+        models_files = str(e)
+        
+    try:
+        backend_files = os.listdir(backend_dir)
+    except Exception as e:
+        backend_files = str(e)
+        
+    model_loaded = app.state.model is not None
+    model_type = type(app.state.model).__name__ if model_loaded else "None"
+    
+    return {
+        "model_loaded": model_loaded,
+        "model_type": model_type,
+        "paths_status": paths_status,
+        "backend_dir_files": backend_files,
+        "models_dir_files": models_files,
+        "cwd": os.getcwd(),
+        "env_model_path": os.getenv("MODEL_PATH")
+    }
+
 app.include_router(forecast.router, prefix="/api")
