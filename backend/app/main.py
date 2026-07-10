@@ -114,6 +114,13 @@ def debug_model():
     except Exception as e:
         backend_files = str(e)
         
+    import traceback
+    load_error = None
+    try:
+        load_keras_model()
+    except Exception as e:
+        load_error = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"
+        
     model_loaded = app.state.model is not None
     model_type = type(app.state.model).__name__ if model_loaded else "None"
     
@@ -124,7 +131,8 @@ def debug_model():
         "backend_dir_files": backend_files,
         "models_dir_files": models_files,
         "cwd": os.getcwd(),
-        "env_model_path": os.getenv("MODEL_PATH")
+        "env_model_path": os.getenv("MODEL_PATH"),
+        "load_error": load_error
     }
 
 app.include_router(forecast.router, prefix="/api")
