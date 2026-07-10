@@ -1,5 +1,6 @@
 import os
 import joblib
+import numpy as np
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,30 +9,102 @@ from app.routes import forecast
 # Global variable to hold the model
 model = None
 
+class NumPyLSTMModel:
+    def __init__(self, weights_path):
+        import h5py
+        with h5py.File(weights_path, "r") as f:
+            # First LSTM layer (lstm)
+            self.lstm_w = f["layers/lstm/cell/vars/0"][:]
+            self.lstm_u = f["layers/lstm/cell/vars/1"][:]
+            self.lstm_b = f["layers/lstm/cell/vars/2"][:]
+            
+            # Second LSTM layer (lstm_1)
+            self.lstm1_w = f["layers/lstm_1/cell/vars/0"][:]
+            self.lstm1_u = f["layers/lstm_1/cell/vars/1"][:]
+            self.lstm1_b = f["layers/lstm_1/cell/vars/2"][:]
+            
+            # First Dense layer (dense)
+            self.dense_w = f["layers/dense/vars/0"][:]
+            self.dense_b = f["layers/dense/vars/1"][:]
+            
+            # Second Dense layer (dense_1)
+            self.dense1_w = f["layers/dense_1/vars/0"][:]
+            self.dense1_b = f["layers/dense_1/vars/1"][:]
+
+    def predict(self, X, verbose=0):
+        batch_size, timesteps, features = X.shape
+        
+        # 1. First LSTM layer (return_sequences=True, 64 units)
+        h_lstm = np.zeros((batch_size, timesteps, 64))
+        h = np.zeros((batch_size, 64))
+        c = np.zeros((batch_size, 64))
+        
+        w_i, w_f, w_c, w_o = np.split(self.lstm_w, 4, axis=1)
+        u_i, u_f, u_c, u_o = np.split(self.lstm_u, 4, axis=1)
+        b_i, b_f, b_c, b_o = np.split(self.lstm_b, 4)
+        
+        for t in range(timesteps):
+            xt = X[:, t, :]
+            
+            i_gate = 1.0 / (1.0 + np.exp(-(np.dot(xt, w_i) + np.dot(h, u_i) + b_i)))
+            f_gate = 1.0 / (1.0 + np.exp(-(np.dot(xt, w_f) + np.dot(h, u_f) + b_f)))
+            c_cand = np.tanh(np.dot(xt, w_c) + np.dot(h, u_c) + b_c)
+            c = f_gate * c + i_gate * c_cand
+            o_gate = 1.0 / (1.0 + np.exp(-(np.dot(xt, w_o) + np.dot(h, u_o) + b_o)))
+            h = o_gate * np.tanh(c)
+            
+            h_lstm[:, t, :] = h
+            
+        # 2. Second LSTM layer (return_sequences=False, 32 units)
+        h1 = np.zeros((batch_size, 32))
+        c1 = np.zeros((batch_size, 32))
+        
+        w1_i, w1_f, w1_c, w1_o = np.split(self.lstm1_w, 4, axis=1)
+        u1_i, u1_f, u1_c, u1_o = np.split(self.lstm1_u, 4, axis=1)
+        b1_i, b1_f, b1_c, b1_o = np.split(self.lstm1_b, 4)
+        
+        for t in range(timesteps):
+            xt1 = h_lstm[:, t, :]
+            
+            i_gate1 = 1.0 / (1.0 + np.exp(-(np.dot(xt1, w1_i) + np.dot(h1, u1_i) + b1_i)))
+            f_gate1 = 1.0 / (1.0 + np.exp(-(np.dot(xt1, w1_f) + np.dot(h1, u1_f) + b1_f)))
+            c_cand1 = np.tanh(np.dot(xt1, w1_c) + np.dot(h1, u1_c) + b1_c)
+            c1 = f_gate1 * c1 + i_gate1 * c_cand1
+            o_gate1 = 1.0 / (1.0 + np.exp(-(np.dot(xt1, w1_o) + np.dot(h1, u1_o) + b1_o)))
+            h1 = o_gate1 * np.tanh(c1)
+            
+        # 3. First Dense layer (relu)
+        dense_out = np.dot(h1, self.dense_w) + self.dense_b
+        dense_out = np.maximum(dense_out, 0)
+        
+        # 4. Second Dense layer (linear)
+        out = np.dot(dense_out, self.dense1_w) + self.dense1_b
+        return out
+
 def load_keras_model():
-    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-    models_dir = os.path.join(root_dir, "models")
+    app_dir = os.path.dirname(os.path.abspath(__file__))
+    backend_dir = os.path.dirname(app_dir)
+    workspace_dir = os.path.dirname(backend_dir)
     
-    config_path = os.path.join(root_dir, "config.json")
-    if not os.path.exists(config_path):
-        config_path = os.path.join(models_dir, "config.json")
-        
-    weights_path = os.path.join(root_dir, "model.weights.h5")
-    if not os.path.exists(weights_path):
-        weights_path = os.path.join(models_dir, "model.weights.h5")
-        
-    if not os.path.exists(config_path) or not os.path.exists(weights_path):
-        raise FileNotFoundError(f"Model files not found. Config: {config_path}, Weights: {weights_path}")
-        
-    import keras
-    import json
+    weights_search_paths = [
+        os.path.join(workspace_dir, "model.weights.h5"),
+        os.path.join(backend_dir, "models", "model.weights.h5"),
+        os.path.join(workspace_dir, "models", "model.weights.h5"),
+    ]
     
-    with open(config_path, "r") as f:
-        model_config = json.load(f)
+    weights_path = None
+    for path in weights_search_paths:
+        if os.path.exists(path):
+            weights_path = path
+            break
+            
+    if not weights_path:
+        raise FileNotFoundError(
+            f"Model weights file not found. \n"
+            f"Weights searched paths: {weights_search_paths}"
+        )
         
-    model = keras.models.model_from_json(json.dumps(model_config))
-    model.load_weights(weights_path)
-    return model
+    return NumPyLSTMModel(weights_path)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
