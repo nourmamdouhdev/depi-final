@@ -8,23 +8,56 @@ from app.routes import forecast
 # Global variable to hold the model
 model = None
 
+def load_keras_model():
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+    models_dir = os.path.join(root_dir, "models")
+    
+    config_path = os.path.join(root_dir, "config.json")
+    if not os.path.exists(config_path):
+        config_path = os.path.join(models_dir, "config.json")
+        
+    weights_path = os.path.join(root_dir, "model.weights.h5")
+    if not os.path.exists(weights_path):
+        weights_path = os.path.join(models_dir, "model.weights.h5")
+        
+    if not os.path.exists(config_path) or not os.path.exists(weights_path):
+        raise FileNotFoundError(f"Model files not found. Config: {config_path}, Weights: {weights_path}")
+        
+    import keras
+    import json
+    
+    with open(config_path, "r") as f:
+        model_config = json.load(f)
+        
+    model = keras.models.model_from_json(json.dumps(model_config))
+    model.load_weights(weights_path)
+    return model
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global model
-    model_path = os.getenv("MODEL_PATH", "/app/models/forecast_model.pkl")
     
-    # Check local path for development if not in Docker
-    if not os.path.exists(model_path):
-        model_path = os.path.join(os.path.dirname(__file__), "../../models/forecast_model.pkl")
-        
     try:
-        model = joblib.load(model_path)
-        print(f"Loaded pretrained model from {model_path}")
-        # Attach the model to the app state so routes can access it
+        # Try loading Keras LSTM model
+        model = load_keras_model()
+        print("Loaded pretrained Keras LSTM model successfully!")
         app.state.model = model
     except Exception as e:
-        print(f"Warning: Could not load model from {model_path}: {e}")
-        app.state.model = None
+        print(f"Warning: Could not load Keras LSTM model: {e}")
+        print("Attempting to load fallback joblib model...")
+        try:
+            model_path = os.getenv("MODEL_PATH", "/app/models/forecast_model.pkl")
+            if not os.path.exists(model_path):
+                model_path = os.path.join(os.path.dirname(__file__), "../../models/forecast_model.pkl")
+            if os.path.exists(model_path):
+                model = joblib.load(model_path)
+                print(f"Loaded fallback pretrained model from {model_path}")
+                app.state.model = model
+            else:
+                app.state.model = None
+        except Exception as ex:
+            print(f"Error loading fallback model: {ex}")
+            app.state.model = None
 
     yield
     # Clean up on shutdown

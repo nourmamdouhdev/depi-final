@@ -7,3 +7,5 @@ numpy
 scikit-learn
 joblib
 python-multipart
+tensorflow-cpu
+h5py
