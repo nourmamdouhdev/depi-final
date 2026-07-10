@@ -42,10 +42,10 @@ def process_and_forecast(df: pd.DataFrame, horizon: int, model):
     last_date = df['Date'].max()
     future_dates = [last_date + timedelta(days=i) for i in range(1, horizon + 1)]
     
-    # Check if the model is a Keras model or scikit-learn fallback
+    # Check if the model is a Keras model or our custom NumPy LSTM model
     is_keras = False
     try:
-        if hasattr(model, 'input_shape') or type(model).__name__ in ('Sequential', 'Functional', 'Model'):
+        if hasattr(model, 'input_shape') or type(model).__name__ in ('Sequential', 'Functional', 'Model', 'NumPyLSTMModel'):
             is_keras = True
     except Exception:
         pass
